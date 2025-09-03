@@ -2,7 +2,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using PersonalDevDashboard.McpServer.Services;
-using System.Text.Json;
+using Octokit;
 
 namespace PersonalDevDashboard.McpServer
 {
@@ -12,10 +12,8 @@ namespace PersonalDevDashboard.McpServer
         {
             var builder = Host.CreateApplicationBuilder(args);
 
-            // Add configuration
             builder.Configuration.AddJsonFile("appsettings.json", optional: false);
 
-            // Get GitHub settings
             var githubToken = builder.Configuration["GitHub:Token"];
             var githubUsername = builder.Configuration["GitHub:Username"];
 
@@ -25,39 +23,70 @@ namespace PersonalDevDashboard.McpServer
                 return;
             }
 
+            // Create GitHub client
+            var githubClient = new GitHubClient(new ProductHeaderValue("PersonalDevDashboard"));
+            githubClient.Credentials = new Credentials(githubToken);
+
             // Register services
-            builder.Services.AddSingleton(new GitHubService(githubToken, githubUsername));
+            builder.Services.AddSingleton(githubClient);
+            builder.Services.AddSingleton<GitHubService>(provider => new GitHubService(githubToken, githubUsername));
+            builder.Services.AddSingleton<FileDownloadService>();
 
             var host = builder.Build();
 
-            Console.WriteLine("🚀 Personal Dev Dashboard MCP Server starting...");
-            Console.WriteLine("Testing GitHub connection...");
+            Console.WriteLine("🚀 Personal Dev Dashboard - Phase 2: File Analysis");
+            Console.WriteLine("Testing file download capabilities...\n");
 
-            // Test GitHub connection
             var githubService = host.Services.GetRequiredService<GitHubService>();
+            var fileDownloadService = host.Services.GetRequiredService<FileDownloadService>();
+
+            // Get repositories
             var repos = await githubService.GetPublicRepositoriesAsync();
+            var staticRepos = repos.Where(r => r.IsStatic).Take(3).ToList(); // Test with first 3 static sites
 
-            Console.WriteLine($"✅ Successfully found {repos.Count} public repositories!");
-            Console.WriteLine("\nYour repositories:");
-
-            foreach (var repo in repos.Take(5)) // Show first 5
+            if (!staticRepos.Any())
             {
-                Console.WriteLine($"📁 {repo.Name}");
-                Console.WriteLine($"   Language: {repo.Language ?? "N/A"}");
-                Console.WriteLine($"   Updated: {repo.UpdatedAt:yyyy-MM-dd}");
-                Console.WriteLine($"   Static Site: {(repo.IsStatic ? "Yes" : "Probably not")}");
-                if (!string.IsNullOrEmpty(repo.Description))
-                    Console.WriteLine($"   Description: {repo.Description}");
+                Console.WriteLine("No static website repositories found. Using first 2 repositories instead.");
+                staticRepos = repos.Take(2).ToList();
+            }
+
+            Console.WriteLine($"Analyzing files from {staticRepos.Count} repositories:\n");
+
+            foreach (var repo in staticRepos)
+            {
+                Console.WriteLine($"📁 Analyzing {repo.Name}...");
+
+                var files = await fileDownloadService.GetWebFilesFromRepositoryAsync(githubUsername, repo.Name);
+
+                Console.WriteLine($"   Found {files.Count} web files:");
+
+                foreach (var file in files)
+                {
+                    var sizeKB = file.Size / 1024.0;
+                    var contentPreview = file.Content.Length > 100
+                        ? file.Content.Substring(0, 100) + "..."
+                        : file.Content;
+
+                    Console.WriteLine($"   📄 {file.Name} ({file.Type}) - {sizeKB:F1}KB");
+                    Console.WriteLine($"       Path: {file.Path}");
+                    Console.WriteLine($"       Preview: {contentPreview.Replace('\n', ' ').Replace('\r', ' ')}\n");
+                }
+
+                if (files.Any())
+                {
+                    Console.WriteLine($"   ✅ Successfully downloaded {files.Count} files from {repo.Name}");
+                }
+                else
+                {
+                    Console.WriteLine($"   ⚠️  No web files found in {repo.Name}");
+                }
+
                 Console.WriteLine();
             }
 
-            if (repos.Count > 5)
-            {
-                Console.WriteLine($"... and {repos.Count - 5} more repositories");
-            }
-
-            Console.WriteLine("\n✨ Phase 1 Complete! Ready for Phase 2.");
-            Console.WriteLine("Press any key to exit...");
+            Console.WriteLine("🎉 Step 1 Complete! File download service is working.");
+            Console.WriteLine("Ready for Step 2: HTML Analysis Engine");
+            Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey();
         }
     }
